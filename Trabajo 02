@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Phaser – Juego con Control de Cursor</title>
+  <style>
+    html, body { height: 100%; margin: 0; background: #0e1220; color: #e6e8f0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji"; }
+    #game { display: grid; place-items: center; height: 100%; }
+    .hud { position: absolute; inset: 0; pointer-events: none; display: grid; grid-template-rows: auto 1fr auto; }
+    .topbar { display: flex; gap: 12px; padding: 12px 16px; align-items: center; }
+    .badge { background: #171c2f; border: 1px solid #2a3152; color: #cbd3ff; padding: 4px 10px; border-radius: 999px; font-size: 12px; }
+    .panel { max-width: 820px; margin: 0 auto; padding: 10px 16px; }
+    .help { background: #12172b; border: 1px solid #2a3152; border-radius: 14px; padding: 10px 12px; font-size: 14px; opacity: .92; }
+    .footer { display: flex; justify-content: center; padding: 10px; font-size: 12px; opacity: .8; }
+    .hidden { display: none !important; }
+    .btn { pointer-events: auto; display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 10px; border: 1px solid #2a3152; background: #1a2040; color: #fff; cursor: pointer; user-select: none; }
+    .btn:hover { filter: brightness(1.1); }
+    .btn-start { position: absolute; inset: 0; display: grid; place-items: center; background: radial-gradient(1200px 600px at 50% -10%, rgba(255,255,255,.06), rgba(255,255,255,0)); }
+  </style>
+  <!-- Phaser 3 desde CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/phaser@3.60.0/dist/phaser.min.js"></script>
+</head>
+<body>
+  <div id="game"></div>
+  <div class="hud">
+    <div class="topbar">
+      <span class="badge" id="score">Puntos: 0</span>
+      <span class="badge" id="lives">Vidas: 3</span>
+      <span class="badge">Controles: mueve el MOUSE para dirigir al jugador • Clic para impulsar</span>
+    </div>
+    <div class="panel">
+      <div class="help">
+        <strong>Objetivo:</strong> recoge los orbes <em>azules</em> para sumar puntos y evita a los <em>enemigos</em> rojos.<br/>
+        <strong>Entrada por cursor:</strong> el jugador sigue al puntero. Haz <em>clic</em> para un <strong>impulso</strong> breve hacia el cursor.
+      </div>
+    </div>
+    <div class="footer">Hecho con Phaser 3 – Ejemplo de control por cursor</div>
+  </div>
+
+  <div class="btn-start" id="startOverlay">
+    <button class="btn" id="startBtn">▶ Iniciar</button>
+  </div>
+
+  <script>
+    // --- Utilidades de texturas creadas por código (sin assets externos) ---
+    function makeCircleTexture(scene, key, radius, fillColor, strokeColor) {
+      const g = scene.add.graphics();
+      g.fillStyle(fillColor, 1);
+      g.lineStyle(4, strokeColor, 1);
+      g.fillCircle(radius, radius, radius);
+      g.strokeCircle(radius, radius, radius);
+      const size = radius * 2;
+      g.generateTexture(key, size, size);
+      g.destroy();
+    }
+
+    function makeCrosshairTexture(scene, key, size) {
+      const g = scene.add.graphics();
+      g.lineStyle(2, 0xffffff, 0.9);
+      const half = size / 2;
+      g.strokeCircle(half, half, half - 2);
+      g.beginPath();
+      g.moveTo(half, 2); g.lineTo(half, size - 2);
+      g.moveTo(2, half); g.lineTo(size - 2, half);
+      g.strokePath();
+      g.generateTexture(key, size, size);
+      g.destroy();
+    }
+
+    const GAME_W = 900;
+    const GAME_H = 600;
+
+    class MainScene extends Phaser.Scene {
+      constructor(){ super('main'); }
+
+      preload(){ /* No assets externos */ }
+
+      create(){
+        // Fondito con estrellas
+        this.add.star(GAME_W/2, GAME_H/2, 6, 200, 260, 0x0f1430).setAlpha(0.15);
+
+        // Crear texturas programáticas
+        makeCircleTexture(this, 'player', 16, 0x75c2ff, 0x2e60ff);
+        makeCircleTexture(this, 'orb', 10, 0x6ef7ff, 0x00d0ff);
+        makeCircleTexture(this, 'enemy', 14, 0xff6b6b, 0xc81e1e);
+        makeCrosshairTexture(this, 'cross', 26);
+
+        // Cursor personalizado
+        this.input.setDefaultCursor('none');
+        this.crosshair = this.add.image(0, 0, 'cross').setDepth(1000);
+
+        // Física
+        this.physics.world.setBounds(0, 0, GAME_W, GAME_H);
+        this.player = this.physics.add.image(GAME_W/2, GAME_H/2, 'player');
+        this.player.setCollideWorldBounds(true);
+        this.player.setDamping(true).setDrag(0.008).setMaxVelocity(300);
+
+        // Grupos
+        this.orbs = this.physics.add.group();
+        this.enemies = this.physics.add.group();
+
+        // Spawns iniciales
+        for (let i = 0; i < 8; i++) this.spawnOrb();
+        for (let i = 0; i < 3; i++) this.spawnEnemy();
+
+        // Marcadores
+        this.score = 0;
+        this.lives = 3;
+        this.updateHUD();
+
+        // Overlaps
+        this.physics.add.overlap(this.player, this.orbs, (player, orb) => {
+          orb.destroy();
+          this.score += 10;
+          this.updateHUD();
+          this.spawnOrb();
+          // Chance de añadir enemigo
+          if (Phaser.Math.Between(0, 100) < 25) this.spawnEnemy();
+        });
+
+        this.physics.add.overlap(this.player, this.enemies, () => {
+          // Golpe: invulnerabilidad breve
+          if (this.player.invul) return;
+          this.player.invul = true;
+          this.lives -= 1; this.updateHUD();
+          this.tweens.add({ targets: this.player, alpha: 0.2, yoyo: true, repeat: 5, duration: 80, onComplete: () => { this.player.alpha = 1; this.player.invul = false; } });
+          if (this.lives <= 0) this.gameOver();
+        });
+
+        // Entrada por cursor: seguir puntero + impulso al hacer clic
+        this.input.on('pointerdown', (p) => {
+          if (this.gameEnded) return;
+          const angle = Phaser.Math.Angle.Between(this.player.x, this.player.y, p.worldX, p.worldY);
+          const power = 350;
+          this.player.body.velocity.x += Math.cos(angle) * power;
+          this.player.body.velocity.y += Math.sin(angle) * power;
+        });
+
+        // Temporizador para IA de enemigos
+        this.time.addEvent({ delay: 60, loop: true, callback: () => this.updateEnemiesAI() });
+
+        // Resize
+        this.scale.on('resize', this.resize, this);
+        this.resize({ width: window.innerWidth, height: window.innerHeight });
+      }
+
+      update(time, delta){
+        if (this.gameEnded) return;
+
+        // Mover jugador hacia el cursor suavemente
+        const p = this.input.activePointer;
+        this.crosshair.setPosition(p.worldX, p.worldY);
+
+        const dist = Phaser.Math.Distance.Between(this.player.x, this.player.y, p.worldX, p.worldY);
+        if (dist > 8) {
+          const speed = Phaser.Math.Clamp(dist * 3, 80, 260);
+          this.physics.moveTo(this.player, p.worldX, p.worldY, speed);
+        } else {
+          this.player.body.setAcceleration(0);
+          this.player.body.setVelocity(this.player.body.velocity.x * 0.98, this.player.body.velocity.y * 0.98);
+        }
+      }
+
+      updateEnemiesAI(){
+        const speedBase = 60 + Math.min(this.score, 200) * 0.2;
+        this.enemies.children.iterate((e) => {
+          if (!e || !e.body) return;
+          const jitter = Phaser.Math.Between(-40, 40);
+          this.physics.moveToObject(e, this.player, speedBase + jitter);
+        });
+      }
+
+      spawnOrb(){
+        const x = Phaser.Math.Between(40, GAME_W - 40);
+        const y = Phaser.Math.Between(40, GAME_H - 40);
+        const orb = this.orbs.create(x, y, 'orb');
+        orb.setCircle(10).setBounce(1).setVelocity(Phaser.Math.Between(-50,50), Phaser.Math.Between(-50,50)).setCollideWorldBounds(true);
+        return orb;
+      }
+
+      spawnEnemy(){
+        const edge = Phaser.Math.Between(0,3);
+        const pos = [
+          {x: 20, y: Phaser.Math.Between(20, GAME_H-20)},
+          {x: GAME_W-20, y: Phaser.Math.Between(20, GAME_H-20)},
+          {x: Phaser.Math.Between(20, GAME_W-20), y: 20},
+          {x: Phaser.Math.Between(20, GAME_W-20), y: GAME_H-20},
+        ][edge];
+        const en = this.enemies.create(pos.x, pos.y, 'enemy');
+        en.setCircle(14).setBounce(1).setCollideWorldBounds(true);
+        en.setVelocity(Phaser.Math.Between(-80,80), Phaser.Math.Between(-80,80));
+        return en;
+      }
+
+      updateHUD(){
+        document.getElementById('score').textContent = `Puntos: ${this.score}`;
+        document.getElementById('lives').textContent = `Vidas: ${this.lives}`;
+      }
+
+      gameOver(){
+        this.gameEnded = true;
+        this.physics.pause();
+        const centerX = GAME_W / 2, centerY = GAME_H / 2;
+        const box = this.add.rectangle(centerX, centerY, 400, 180, 0x000000, 0.6).setStrokeStyle(2, 0xffffff);
+        const txt = this.add.text(centerX, centerY - 20, '¡Juego terminado!', { fontSize: '28px', fontFamily: 'monospace', color: '#ffffff' }).setOrigin(0.5);
+        const sub = this.add.text(centerX, centerY + 18, 'Clic para reiniciar', { fontSize: '16px', fontFamily: 'monospace', color: '#cbd3ff' }).setOrigin(0.5);
+        this.input.once('pointerdown', () => this.scene.restart());
+      }
+
+      resize(gameSize){
+        const { width, height } = gameSize;
+        const parent = this.game.canvas.parentNode;
+        parent.style.width = width + 'px';
+        parent.style.height = height + 'px';
+      }
+    }
+
+    // Configuración del juego (arranca cuando el usuario pulsa Iniciar)
+    let game = null;
+
+    function startGame(){
+      if (game) return;
+      game = new Phaser.Game({
+        type: Phaser.AUTO,
+        parent: 'game',
+        width: GAME_W,
+        height: GAME_H,
+        backgroundColor: '#0a0e1a',
+        physics: { default: 'arcade', arcade: { gravity: { y: 0 }, debug: false } },
+        scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+        scene: [MainScene]
+      });
+    }
+
+    // Botón de inicio para desbloquear audio/entrada en navegadores
+    document.getElementById('startBtn').addEventListener('click', () => {
+      document.getElementById('startOverlay').classList.add('hidden');
+      startGame();
+    });
+  </script>
+</body>
+</html>
